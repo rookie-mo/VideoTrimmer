@@ -1,0 +1,3 @@
+PyQt6==6.4.2
+python-vlc==3.0.21203
+PyInstaller==6.19.0

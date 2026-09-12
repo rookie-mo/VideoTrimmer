@@ -31,6 +31,13 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+!video_trimmer.spec
+
+# Local media toolchain and release artifacts
+ffmpeg.exe
+ffprobe.exe
+ffplay.exe
+*.zip
 
 # Installer logs
 pip-log.txt
