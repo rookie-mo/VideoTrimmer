@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox,
     QProgressBar, QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox,
     QFormLayout, QStatusBar, QSlider, QComboBox, QListWidget,
-    QListWidgetItem, QAbstractItemView, QFrame
+    QListWidgetItem, QAbstractItemView, QFrame, QScrollArea
 )
 from PyQt6.QtCore import (
     Qt,
@@ -169,7 +169,7 @@ CURRENT_LANGUAGE = "zh"
 
 TRANSLATIONS = {
     "en": {
-        "多区段视频截取与拼接工具 (稳定版)": "Multi-Segment Video Trimmer & Joiner",
+        "多视频拼接裁剪与压缩工具": "Multi-Video Trimmer & Joiner",
         "就绪": "Ready",
         "没有有效的片段可截取。": "No valid segments to process.",
         "正在准备 {count} 个片段...": "Preparing {count} segment(s)...",
@@ -199,6 +199,30 @@ TRANSLATIONS = {
         "预览模式：仅播放选中的区间": "Preview mode: selected ranges only",
         "预览模式：正常播放全部视频": "Preview mode: play the full video",
         "文件": "File",
+        "视频队列": "Video queue",
+        "添加视频...": "Add videos...",
+        "移除选中": "Remove selected",
+        "上移": "Move up",
+        "下移": "Move down",
+        "清空队列": "Clear queue",
+        "队列顺序即输出顺序；没有片段的视频会输出完整内容。": (
+            "Queue order is the output order. Videos without segments "
+            "are exported in full."
+        ),
+        "输出文件": "Output file",
+        "当前视频:": "Current video:",
+        "当前选中的视频": "Selected video",
+        "{count} 个片段": "{count} segment(s)",
+        "完整视频": "Full video",
+        "{index}. {name} | {duration} | {segments}": (
+            "{index}. {name} | {duration} | {segments}"
+        ),
+        "静音导出": "Mute output",
+        "以下视频无法读取：\n{errors}": (
+            "The following videos could not be read:\n{errors}"
+        ),
+        "请先添加至少一个视频。": "Add at least one video first.",
+        "没有可输出的视频。": "There are no videos to export.",
         "请选择输入视频": "Select an input video",
         "浏览输入...": "Browse input...",
         "选择输出路径...": "Choose output path...",
@@ -320,7 +344,7 @@ TRANSLATIONS = {
         ),
     },
     "ja": {
-        "多区段视频截取与拼接工具 (稳定版)": "複数区間 動画トリミング＆結合ツール",
+        "多视频拼接裁剪与压缩工具": "複数動画 トリミング＆結合ツール",
         "就绪": "準備完了",
         "没有有效的片段可截取。": "処理できる区間がありません。",
         "正在准备 {count} 个片段...": "{count} 個の区間を準備しています...",
@@ -349,6 +373,29 @@ TRANSLATIONS = {
         "预览模式：仅播放选中的区间": "プレビュー：選択区間のみ再生",
         "预览模式：正常播放全部视频": "プレビュー：全体を再生",
         "文件": "ファイル",
+        "视频队列": "動画キュー",
+        "添加视频...": "動画を追加...",
+        "移除选中": "選択を削除",
+        "上移": "上へ移動",
+        "下移": "下へ移動",
+        "清空队列": "キューを空にする",
+        "队列顺序即输出顺序；没有片段的视频会输出完整内容。": (
+            "キューの順番が出力順です。区間のない動画は全体を出力します。"
+        ),
+        "输出文件": "出力ファイル",
+        "当前视频:": "現在の動画:",
+        "当前选中的视频": "選択中の動画",
+        "{count} 个片段": "{count} 区間",
+        "完整视频": "動画全体",
+        "{index}. {name} | {duration} | {segments}": (
+            "{index}. {name} | {duration} | {segments}"
+        ),
+        "静音导出": "音声なしで出力",
+        "以下视频无法读取：\n{errors}": (
+            "次の動画を読み込めません：\n{errors}"
+        ),
+        "请先添加至少一个视频。": "先に動画を1つ以上追加してください。",
+        "没有可输出的视频。": "出力できる動画がありません。",
         "请选择输入视频": "入力動画を選択",
         "浏览输入...": "入力動画を選択...",
         "选择输出路径...": "出力先を選択...",
@@ -538,26 +585,24 @@ class ProcessThread(QThread):
 
     def __init__(
         self,
-        input_path,
+        items,
         output_path,
-        segments,
         target_size,
         codec="libx264",
         preset="medium",
         ffmpeg_params=None,
-        fps=None,
-        has_audio=None,
+        mute_audio=False,
+        keep_ratio=True,
     ):
         super().__init__()
-        self.input_path = input_path
+        self.items = items
         self.output_path = output_path
-        self.segments = segments
         self.target_size = target_size
         self.codec = codec
         self.preset = preset
         self.ffmpeg_params = ffmpeg_params
-        self.fps = fps
-        self.has_audio = has_audio
+        self.mute_audio = mute_audio
+        self.keep_ratio = keep_ratio
 
     @staticmethod
     def _parse_fraction_rate(value):
@@ -613,62 +658,107 @@ class ProcessThread(QThread):
         return fps, has_audio
 
     def run(self):
-        valid_segments = [
-            (start, end)
-            for start, end in self.segments
-            if end > start
-        ]
         try:
-            if not valid_segments:
+            valid_items = []
+            for item in self.items:
+                duration = float(item.get("duration") or 0)
+                segments = [
+                    (float(start), float(end))
+                    for start, end in item.get("segments", [])
+                    if end > start
+                ]
+                if not segments and duration > 0:
+                    segments = [(0.0, duration)]
+                if not segments:
+                    continue
+                normalized = dict(item)
+                normalized["segments"] = segments
+                valid_items.append(normalized)
+
+            if not valid_items:
                 raise ValueError(tr("没有有效的片段可截取。"))
 
-            if self.fps is None or self.has_audio is None:
-                fps, has_audio = self._probe_media_info(self.input_path)
-            else:
-                fps = float(self.fps)
-                has_audio = bool(self.has_audio)
-
-            target_w = None
-            target_h = None
+            first_item = valid_items[0]
             if self.target_size:
                 target_w, target_h = self.target_size
-                if target_w % 2 == 1:
-                    target_w += 1
-                if target_h % 2 == 1:
-                    target_h += 1
+            else:
+                target_w, target_h = first_item.get(
+                    "resolution", (1280, 720)
+                )
+            target_w = int(target_w or 1280)
+            target_h = int(target_h or 720)
+            if target_w % 2 == 1:
+                target_w += 1
+            if target_h % 2 == 1:
+                target_h += 1
+
+            output_fps = float(first_item.get("fps") or 30.0)
+            output_has_audio = (
+                not self.mute_audio
+                and any(item.get("has_audio") for item in valid_items)
+            )
+            segment_count = sum(
+                len(item["segments"]) for item in valid_items
+            )
 
             self.status_updated.emit(
                 tr("正在准备 {count} 个片段...").format(
-                    count=len(valid_segments)
+                    count=segment_count
                 )
             )
             filter_parts = []
             concat_inputs = []
-            for index, (start, end) in enumerate(valid_segments):
-                video_chain = (
-                    f"[0:v:0]trim=start={start:.6f}:end={end:.6f},"
-                    "setpts=PTS-STARTPTS"
-                )
-                if target_w is not None:
+            output_index = 0
+            for input_index, item in enumerate(valid_items):
+                for start, end in item["segments"]:
+                    video_chain = (
+                        f"[{input_index}:v:0]"
+                        f"trim=start={start:.6f}:end={end:.6f},"
+                        "setpts=PTS-STARTPTS"
+                    )
+                    if self.keep_ratio:
+                        video_chain += (
+                            f",scale={target_w}:{target_h}:"
+                            "force_original_aspect_ratio=decrease:"
+                            "flags=lanczos"
+                            f",pad={target_w}:{target_h}:"
+                            "(ow-iw)/2:(oh-ih)/2:color=black"
+                        )
+                    else:
+                        video_chain += (
+                            f",scale={target_w}:{target_h}:flags=lanczos"
+                        )
                     video_chain += (
-                        f",scale={target_w}:{target_h}:flags=lanczos"
+                        f",setsar=1,fps={output_fps:.6f},"
+                        f"format=yuv420p[v{output_index}]"
                     )
-                video_chain += ",format=yuv420p"
-                video_chain += f"[v{index}]"
-                filter_parts.append(video_chain)
-                concat_inputs.append(f"[v{index}]")
+                    filter_parts.append(video_chain)
+                    concat_inputs.append(f"[v{output_index}]")
 
-                if has_audio:
-                    audio_chain = (
-                        f"[0:a:0]atrim=start={start:.6f}:end={end:.6f},"
-                        "asetpts=PTS-STARTPTS"
-                    )
-                    audio_chain += f"[a{index}]"
-                    filter_parts.append(audio_chain)
-                    concat_inputs.append(f"[a{index}]")
+                    if output_has_audio:
+                        if item.get("has_audio"):
+                            audio_chain = (
+                                f"[{input_index}:a:0]"
+                                f"atrim=start={start:.6f}:end={end:.6f},"
+                                "asetpts=PTS-STARTPTS,"
+                                "aresample=48000,"
+                                "aformat=sample_fmts=fltp:"
+                                "channel_layouts=stereo"
+                            )
+                        else:
+                            audio_chain = (
+                                "anullsrc=channel_layout=stereo:"
+                                "sample_rate=48000,"
+                                f"atrim=duration={max(0.001, end - start):.6f},"
+                                "asetpts=PTS-STARTPTS"
+                            )
+                        audio_chain += f"[a{output_index}]"
+                        filter_parts.append(audio_chain)
+                        concat_inputs.append(f"[a{output_index}]")
 
-            segment_count = len(valid_segments)
-            if has_audio:
+                    output_index += 1
+
+            if output_has_audio:
                 concat_part = (
                     "".join(concat_inputs)
                     + f"concat=n={segment_count}:v=1:a=1[vout][aout]"
@@ -687,16 +777,21 @@ class ProcessThread(QThread):
                 "-nostdin",
                 "-nostats",
                 "-progress", "pipe:1",
-                "-i", self.input_path,
+            ]
+            for item in valid_items:
+                command.extend(["-i", item["path"]])
+            command.extend([
                 "-filter_complex", filter_graph,
                 "-map", "[vout]",
-            ]
-            if has_audio:
+            ])
+            if output_has_audio:
                 command.extend([
                     "-map", "[aout]",
                     "-c:a", "aac",
                     "-b:a", "192k",
                 ])
+            else:
+                command.append("-an")
             command.extend(["-c:v", self.codec])
             if self.preset:
                 command.extend(["-preset", self.preset])
@@ -704,7 +799,7 @@ class ProcessThread(QThread):
                 command.extend(self.ffmpeg_params)
             command.extend([
                 "-pix_fmt", "yuv420p",
-                "-r", f"{fps:.6f}",
+                "-r", f"{output_fps:.6f}",
                 "-movflags", "+faststart",
                 self.output_path,
             ])
@@ -723,7 +818,12 @@ class ProcessThread(QThread):
             )
 
             total_duration = max(
-                0.000001, sum(end - start for start, end in valid_segments)
+                0.000001,
+                sum(
+                    end - start
+                    for item in valid_items
+                    for start, end in item["segments"]
+                ),
             )
             last_percent = -1
             while True:
@@ -1019,13 +1119,16 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(
-            tr("多区段视频截取与拼接工具 (稳定版)")
+            tr("多视频拼接裁剪与压缩工具")
         )
         self.setMinimumSize(1100, 750)
 
         self.input_path = ""
         self.output_path = ""
         self._output_path_manual = False
+        self.clips = []
+        self.current_clip_index = -1
+        self._clip_sequence = 0
         self.video_duration = 0.0
         self.video_resolution = (0, 0)
         self.video_fps = 25.0
@@ -1339,18 +1442,50 @@ class MainWindow(QMainWindow):
         language_row.addWidget(self.github_button)
         right_layout.addLayout(language_row)
 
-        # 文件
-        file_group = QGroupBox(tr("文件"))
+        # 视频队列
+        queue_group = QGroupBox(tr("视频队列"))
+        queue_layout = QVBoxLayout()
+        self.clip_list = QListWidget()
+        self.clip_list.setMaximumHeight(120)
+        self.clip_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.clip_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.clip_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        queue_layout.addWidget(self.clip_list)
+
+        queue_button_row = QHBoxLayout()
+        self.btn_browse_input = QPushButton(tr("添加视频..."))
+        self.btn_remove_clip = QPushButton(tr("移除选中"))
+        self.btn_move_clip_up = QPushButton(tr("上移"))
+        self.btn_move_clip_down = QPushButton(tr("下移"))
+        self.btn_clear_clips = QPushButton(tr("清空队列"))
+        queue_button_row.addWidget(self.btn_browse_input)
+        queue_button_row.addWidget(self.btn_remove_clip)
+        queue_button_row.addWidget(self.btn_move_clip_up)
+        queue_button_row.addWidget(self.btn_move_clip_down)
+        queue_button_row.addWidget(self.btn_clear_clips)
+        queue_layout.addLayout(queue_button_row)
+        self.queue_hint = QLabel(
+            tr("队列顺序即输出顺序；没有片段的视频会输出完整内容。")
+        )
+        self.queue_hint.setWordWrap(True)
+        queue_layout.addWidget(self.queue_hint)
+        queue_group.setLayout(queue_layout)
+        right_layout.addWidget(queue_group)
+
+        # 输出文件
+        file_group = QGroupBox(tr("输出文件"))
         file_layout = QVBoxLayout()
         self.input_label = QLineEdit()
         self.input_label.setReadOnly(True)
-        self.input_label.setPlaceholderText(tr("请选择输入视频"))
-        btn_browse_input = QPushButton(tr("浏览输入..."))
-        btn_browse_output = QPushButton(tr("选择输出路径..."))
-        file_layout.addWidget(QLabel(tr("输入:")))
+        self.input_label.setPlaceholderText(tr("当前选中的视频"))
+        self.btn_browse_output = QPushButton(tr("选择输出路径..."))
+        file_layout.addWidget(QLabel(tr("当前视频:")))
         file_layout.addWidget(self.input_label)
-        file_layout.addWidget(btn_browse_input)
-        file_layout.addWidget(btn_browse_output)
+        file_layout.addWidget(self.btn_browse_output)
         file_group.setLayout(file_layout)
         right_layout.addWidget(file_group)
 
@@ -1461,6 +1596,9 @@ class MainWindow(QMainWindow):
         self.quality_combo.setCurrentIndex(1)
         quality_row.addWidget(self.quality_combo, 1)
         encoder_layout.addLayout(quality_row)
+        self.cb_mute_export = QCheckBox(tr("静音导出"))
+        self.cb_mute_export.setChecked(False)
+        encoder_layout.addWidget(self.cb_mute_export)
         self.encoder_hint = QLabel(
             tr(
                 "H.264 兼容性更好；H.265 压缩率更高。"
@@ -1489,10 +1627,11 @@ class MainWindow(QMainWindow):
         self.output_path_label.setWordWrap(True)
         right_layout.addWidget(self.output_path_label)
 
-        main_layout.addWidget(right_panel, 1)
-
-        self.btn_browse_input = btn_browse_input
-        self.btn_browse_output = btn_browse_output
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setWidget(right_panel)
+        main_layout.addWidget(right_scroll, 1)
 
     def _connect_signals(self):
         self.theme_combo.currentIndexChanged.connect(self.apply_theme)
@@ -1500,6 +1639,18 @@ class MainWindow(QMainWindow):
             self.change_language
         )
         self.github_button.clicked.connect(self.open_github)
+        self.clip_list.itemClicked.connect(self.on_clip_selected)
+        self.clip_list.model().rowsMoved.connect(
+            self.on_clip_rows_moved
+        )
+        self.btn_remove_clip.clicked.connect(self.remove_selected_clip)
+        self.btn_move_clip_up.clicked.connect(
+            lambda: self.move_selected_clip(-1)
+        )
+        self.btn_move_clip_down.clicked.connect(
+            lambda: self.move_selected_clip(1)
+        )
+        self.btn_clear_clips.clicked.connect(self.clear_clips)
         self.btn_browse_input.clicked.connect(self.browse_input)
         self.btn_browse_output.clicked.connect(self.browse_output)
         self.btn_start.clicked.connect(self.start_processing)
@@ -1577,6 +1728,9 @@ class MainWindow(QMainWindow):
         self.segments.sort(key=lambda x: x[0])
         self.refresh_segment_list()
         self.update_range_bar()
+        self.refresh_clip_list(
+            select_id=self._current_clip_id()
+        )
 
     def delete_segment(self):
         current_item = self.seg_list.currentItem()
@@ -1586,11 +1740,15 @@ class MainWindow(QMainWindow):
                 del self.segments[idx]
                 self.refresh_segment_list()
                 self.update_range_bar()
+                self.refresh_clip_list(
+                    select_id=self._current_clip_id()
+                )
 
     def clear_segments(self):
         self.segments.clear()
         self.refresh_segment_list()
         self.update_range_bar()
+        self.refresh_clip_list(select_id=self._current_clip_id())
 
     def refresh_segment_list(self):
         self.seg_list.clear()
@@ -1745,7 +1903,8 @@ class MainWindow(QMainWindow):
 
     # ---------- 文件相关 ----------
     def _reset_source_state(self):
-        self.segments.clear()
+        self.input_path = ""
+        self.segments = []
         self.refresh_segment_list()
         self.marker_start_sec = None
         self.marker_end_sec = None
@@ -1765,6 +1924,175 @@ class MainWindow(QMainWindow):
         self.time_label.setText("00:00 / 00:00")
         self.info_label.setText(tr("未加载视频"))
 
+    def _clip_list_text(self, index, clip):
+        segment_text = (
+            tr("{count} 个片段").format(count=len(clip["segments"]))
+            if clip["segments"]
+            else tr("完整视频")
+        )
+        return tr(
+            "{index}. {name} | {duration} | {segments}"
+        ).format(
+            index=index + 1,
+            name=clip["name"],
+            duration=self._format_time(clip["duration"] * 1000),
+            segments=segment_text,
+        )
+
+    def _current_clip_id(self):
+        if 0 <= self.current_clip_index < len(self.clips):
+            return self.clips[self.current_clip_index]["id"]
+        return None
+
+    def refresh_clip_list(self, select_id=None):
+        self.clip_list.blockSignals(True)
+        self.clip_list.clear()
+        selected_row = -1
+        for index, clip in enumerate(self.clips):
+            item = QListWidgetItem(self._clip_list_text(index, clip))
+            item.setData(Qt.ItemDataRole.UserRole, clip["id"])
+            self.clip_list.addItem(item)
+            if clip["id"] == select_id:
+                selected_row = index
+        self.clip_list.blockSignals(False)
+        if selected_row >= 0:
+            self.clip_list.setCurrentRow(selected_row)
+        elif self.clips:
+            self.clip_list.setCurrentRow(0)
+
+    def _activate_clip(self, index):
+        if index < 0 or index >= len(self.clips):
+            self.current_clip_index = -1
+            self._clear_preview_media()
+            self._reset_source_state()
+            return
+
+        clip = self.clips[index]
+        if (
+            self.current_clip_index == index
+            and self.input_path == clip["path"]
+            and self.video_duration > 0
+        ):
+            return
+
+        self.stop_play()
+        self._clear_preview_media()
+        self._reset_source_state()
+        self.current_clip_index = index
+        self._apply_clip_to_editor(clip)
+        self.refresh_clip_list(select_id=clip["id"])
+        self.load_video_for_preview(clip["path"])
+        if not self._output_path_manual:
+            self.auto_set_output_path()
+
+    def on_clip_selected(self, item):
+        row = self.clip_list.row(item)
+        self._activate_clip(row)
+
+    def on_clip_rows_moved(
+        self, _parent, _start, _end, _destination, _row
+    ):
+        current_id = self._current_clip_id()
+        ordered_ids = [
+            self.clip_list.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(self.clip_list.count())
+        ]
+        clips_by_id = {clip["id"]: clip for clip in self.clips}
+        self.clips = [
+            clips_by_id[clip_id]
+            for clip_id in ordered_ids
+            if clip_id in clips_by_id
+        ]
+        self.refresh_clip_list(select_id=current_id)
+        if current_id is not None:
+            self.current_clip_index = next(
+                (
+                    index
+                    for index, clip in enumerate(self.clips)
+                    if clip["id"] == current_id
+                ),
+                -1,
+            )
+        if not self._output_path_manual:
+            self.auto_set_output_path()
+
+    def remove_selected_clip(self):
+        row = self.clip_list.currentRow()
+        if row < 0 or row >= len(self.clips):
+            return
+        active_id = self._current_clip_id()
+        removed_id = self.clips[row]["id"]
+        was_current = active_id == removed_id
+        del self.clips[row]
+        if not self.clips:
+            self.current_clip_index = -1
+            self._clear_preview_media()
+            self._reset_source_state()
+            self.input_label.clear()
+            self.refresh_clip_list()
+            self.output_path = ""
+            self._output_path_manual = False
+            self.output_path_label.setText(tr("输出路径：未设置"))
+            return
+
+        next_index = min(row, len(self.clips) - 1)
+        if was_current:
+            self.current_clip_index = -1
+            self.refresh_clip_list(select_id=self.clips[next_index]["id"])
+            self._activate_clip(next_index)
+        else:
+            active_index = next(
+                (
+                    index
+                    for index, clip in enumerate(self.clips)
+                    if clip["id"] == active_id
+                ),
+                -1,
+            )
+            self.current_clip_index = active_index
+            self.refresh_clip_list(select_id=active_id)
+        if not self._output_path_manual:
+            self.auto_set_output_path()
+
+    def move_selected_clip(self, delta):
+        row = self.clip_list.currentRow()
+        target = row + delta
+        if row < 0 or target < 0 or target >= len(self.clips):
+            return
+        current_id = None
+        if 0 <= self.current_clip_index < len(self.clips):
+            current_id = self.clips[self.current_clip_index]["id"]
+        self.clips[row], self.clips[target] = (
+            self.clips[target],
+            self.clips[row],
+        )
+        self.refresh_clip_list(select_id=current_id)
+        if current_id is not None:
+            self.current_clip_index = next(
+                (
+                    index
+                    for index, clip in enumerate(self.clips)
+                    if clip["id"] == current_id
+                ),
+                -1,
+            )
+        else:
+            self.current_clip_index = target
+        if not self._output_path_manual:
+            self.auto_set_output_path()
+
+    def clear_clips(self):
+        self.clips.clear()
+        self.current_clip_index = -1
+        self.stop_play()
+        self._clear_preview_media()
+        self._reset_source_state()
+        self.input_label.clear()
+        self.output_path = ""
+        self._output_path_manual = False
+        self.refresh_clip_list()
+        self.output_path_label.setText(tr("输出路径：未设置"))
+
     def browse_input(self):
         was_playing = (
             hasattr(self, "vlc_player") and self.vlc_player.is_playing()
@@ -1772,7 +2100,7 @@ class MainWindow(QMainWindow):
         if was_playing:
             self.vlc_player.set_pause(1)
 
-        file_path, _ = QFileDialog.getOpenFileName(
+        file_paths, _ = QFileDialog.getOpenFileNames(
             self,
             tr("选择视频文件"),
             "",
@@ -1781,26 +2109,59 @@ class MainWindow(QMainWindow):
                 "所有文件 (*.*)"
             ),
         )
-        if file_path:
-            self.stop_play()
-            self._clear_preview_media()
-            self._reset_source_state()
-            self.input_path = file_path
-            self.output_path = ""
-            self._output_path_manual = False
-            self.input_label.setText(file_path)
-            self.auto_set_output_path()
-            self.load_video_info(file_path)
-            self.load_video_for_preview(file_path)
+        if not file_paths:
+            if was_playing and self.vlc_player.get_state() != vlc.State.Ended:
+                self.vlc_player.set_pause(0)
+            return
+
+        first_new_index = len(self.clips)
+        errors = []
+        for file_path in file_paths:
+            try:
+                info = self._probe_video_info(file_path)
+            except Exception as exc:
+                errors.append(f"{os.path.basename(file_path)}: {exc}")
+                continue
+            self._clip_sequence += 1
+            self.clips.append({
+                "id": self._clip_sequence,
+                "path": file_path,
+                "name": os.path.basename(file_path),
+                "duration": info["duration"],
+                "resolution": info["resolution"],
+                "fps": info["fps"],
+                "has_audio": info["has_audio"],
+                "segments": [],
+            })
+
+        if errors:
+            QMessageBox.warning(
+                self,
+                tr("读取失败"),
+                tr("以下视频无法读取：\n{errors}").format(
+                    errors="\n".join(errors)
+                ),
+            )
+        if first_new_index < len(self.clips):
+            selected_clip = self.clips[first_new_index]
+            self.refresh_clip_list(select_id=selected_clip["id"])
+            self._activate_clip(first_new_index)
         elif was_playing:
             if self.vlc_player.get_state() != vlc.State.Ended:
                 self.vlc_player.set_pause(0)
 
     def browse_output(self):
-        if self.input_path:
-            default_name = os.path.splitext(os.path.basename(self.input_path))[0] + "_merged.mp4"
-            default_dir = os.path.dirname(self.input_path)
-            default_path = os.path.join(default_dir, default_name)
+        if self.output_path:
+            default_path = self.output_path
+        elif self.clips:
+            source_path = self.clips[0]["path"]
+            default_name = (
+                os.path.splitext(os.path.basename(source_path))[0]
+                + f"-{self._output_suffix()}.mp4"
+            )
+            default_path = os.path.join(
+                os.path.dirname(source_path), default_name
+            )
         else:
             default_path = "output_merged.mp4"
         file_path, _ = QFileDialog.getSaveFileName(
@@ -1817,10 +2178,10 @@ class MainWindow(QMainWindow):
             )
 
     def _output_suffix(self):
-        encoder_text = self.encoder_combo.currentText()
-        if "NVENC H.265" in encoder_text:
+        encoder_index = self.encoder_combo.currentIndex()
+        if encoder_index == 1:
             short_name = "h265"
-        elif "NVENC H.264" in encoder_text:
+        elif encoder_index == 0:
             short_name = "h264"
         else:
             return "h264-cpu"
@@ -1839,9 +2200,10 @@ class MainWindow(QMainWindow):
         return f"{root}-{index}{extension}"
 
     def auto_set_output_path(self):
-        if self.input_path and not self._output_path_manual:
-            directory = os.path.dirname(self.input_path)
-            base_name = os.path.splitext(os.path.basename(self.input_path))[0]
+        source_path = self.clips[0]["path"] if self.clips else self.input_path
+        if source_path and not self._output_path_manual:
+            directory = os.path.dirname(source_path)
+            base_name = os.path.splitext(os.path.basename(source_path))[0]
             candidate = os.path.join(
                 directory,
                 f"{base_name}-{self._output_suffix()}.mp4",
@@ -1851,88 +2213,111 @@ class MainWindow(QMainWindow):
                 tr("输出路径：{path}").format(path=self.output_path)
             )
 
-    def load_video_info(self, file_path):
-        self.video_duration = 0.0
-        self.video_resolution = (0, 0)
-        self.video_fps = 25.0
-        self.has_audio = False
+    def _probe_video_info(self, file_path):
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        try:
-            result = subprocess.run(
-                [
-                    _FFPROBE_PATH,
-                    "-v", "error",
-                    "-print_format", "json",
-                    "-show_format",
-                    "-show_streams",
-                    file_path,
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-                creationflags=flags,
+        result = subprocess.run(
+            [
+                _FFPROBE_PATH,
+                "-v", "error",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                file_path,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            creationflags=flags,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                result.stderr.strip() or tr("FFprobe 读取失败")
             )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    result.stderr.strip() or tr("FFprobe 读取失败")
-                )
 
-            data = json.loads(result.stdout or "{}")
-            duration = 0.0
-            width = 0
-            height = 0
-            fps = 25.0
-            has_audio = False
-            for stream in data.get("streams", []):
-                codec_type = stream.get("codec_type")
-                if codec_type == "video":
-                    width = int(stream.get("width") or 0)
-                    height = int(stream.get("height") or 0)
-                    try:
-                        duration = float(stream.get("duration") or 0)
-                    except (TypeError, ValueError):
-                        duration = 0.0
-                    parsed_fps = ProcessThread._parse_fraction_rate(
-                        stream.get("avg_frame_rate")
-                    )
-                    if not parsed_fps:
-                        parsed_fps = ProcessThread._parse_fraction_rate(
-                            stream.get("r_frame_rate")
-                        )
-                    if parsed_fps:
-                        fps = parsed_fps
-                elif codec_type == "audio":
-                    has_audio = True
-
-            format_duration = data.get("format", {}).get("duration")
-            if not duration:
+        data = json.loads(result.stdout or "{}")
+        duration = 0.0
+        width = 0
+        height = 0
+        fps = 25.0
+        has_audio = False
+        for stream in data.get("streams", []):
+            codec_type = stream.get("codec_type")
+            if codec_type == "video":
+                width = int(stream.get("width") or 0)
+                height = int(stream.get("height") or 0)
                 try:
-                    duration = float(format_duration or 0)
+                    duration = float(stream.get("duration") or 0)
                 except (TypeError, ValueError):
                     duration = 0.0
-            if duration <= 0:
-                raise RuntimeError(tr("无法从文件中读取视频时长"))
-            if width <= 0 or height <= 0:
-                raise RuntimeError(tr("无法从文件中读取视频分辨率"))
+                parsed_fps = ProcessThread._parse_fraction_rate(
+                    stream.get("avg_frame_rate")
+                )
+                if not parsed_fps:
+                    parsed_fps = ProcessThread._parse_fraction_rate(
+                        stream.get("r_frame_rate")
+                    )
+                if parsed_fps:
+                    fps = parsed_fps
+            elif codec_type == "audio":
+                has_audio = True
 
-            self.video_duration = duration
-            self.video_resolution = (width, height)
-            self.video_fps = fps
-            self.has_audio = has_audio
-            self.original_ratio = width / height if height else 1.0
+        format_duration = data.get("format", {}).get("duration")
+        if not duration:
+            try:
+                duration = float(format_duration or 0)
+            except (TypeError, ValueError):
+                duration = 0.0
+        if duration <= 0:
+            raise RuntimeError(tr("无法从文件中读取视频时长"))
+        if width <= 0 or height <= 0:
+            raise RuntimeError(tr("无法从文件中读取视频分辨率"))
+        return {
+            "duration": duration,
+            "resolution": (width, height),
+            "fps": fps,
+            "has_audio": has_audio,
+        }
 
-            self.start_spin.setMaximum(self.video_duration - 0.1)
-            self.end_spin.setMaximum(self.video_duration)
-            self.end_spin.setValue(min(10.0, self.video_duration))
-            self.start_spin.setValue(0.0)
+    def _apply_clip_to_editor(self, clip):
+        self.input_path = clip["path"]
+        self.video_duration = clip["duration"]
+        self.video_resolution = clip["resolution"]
+        self.video_fps = clip["fps"]
+        self.has_audio = clip["has_audio"]
+        self.segments = clip["segments"]
+        self.original_ratio = (
+            self.video_resolution[0] / self.video_resolution[1]
+            if self.video_resolution[1]
+            else 1.0
+        )
+        self.input_label.setText(self.input_path)
+        self.start_spin.setMaximum(self.video_duration - 0.1)
+        self.end_spin.setMaximum(self.video_duration)
+        self.end_spin.setValue(min(10.0, self.video_duration))
+        self.start_spin.setValue(0.0)
+        self.width_spin.setValue(self.video_resolution[0])
+        self.height_spin.setValue(self.video_resolution[1])
+        self.refresh_segment_list()
+        self.update_info_label()
+        self.reset_timeline_zoom()
+        self.update_range_bar()
 
-            self.width_spin.setValue(self.video_resolution[0])
-            self.height_spin.setValue(self.video_resolution[1])
-            self.update_info_label()
-            self.reset_timeline_zoom()
-            self.update_range_bar()
+    def load_video_info(self, file_path):
+        try:
+            info = self._probe_video_info(file_path)
+            clip = {
+                "id": -1,
+                "path": file_path,
+                "name": os.path.basename(file_path),
+                "duration": info["duration"],
+                "resolution": info["resolution"],
+                "fps": info["fps"],
+                "has_audio": info["has_audio"],
+                "segments": [],
+            }
+            self._apply_clip_to_editor(clip)
         except Exception as e:
             QMessageBox.warning(
                 self,
@@ -2282,18 +2667,18 @@ class MainWindow(QMainWindow):
 
     def _update_quality_enabled(self):
         self.quality_combo.setEnabled(
-            "NVENC" in self.encoder_combo.currentText()
+            self.encoder_combo.currentIndex() in (0, 1)
         )
 
     def update_auto_output_path(self):
         self.auto_set_output_path()
 
     def start_processing(self):
-        if not self.input_path or not os.path.exists(self.input_path):
+        if not self.clips:
             QMessageBox.warning(
                 self,
                 tr("错误"),
-                tr("请先选择有效的输入视频。"),
+                tr("请先添加至少一个视频。"),
             )
             return
         if not self.output_path:
@@ -2301,24 +2686,44 @@ class MainWindow(QMainWindow):
                 self, tr("错误"), tr("请设置输出路径。")
             )
             return
-        if not self.segments:
-            QMessageBox.warning(
-                self,
-                tr("错误"),
-                tr("请先添加至少一个截取区间。"),
-            )
-            return
 
         target_size = None
         if self.cb_resize.isChecked():
             target_size = (self.width_spin.value(), self.height_spin.value())
 
+        items = []
+        for clip in self.clips:
+            if clip["duration"] <= 0:
+                continue
+            segments = (
+                list(clip["segments"])
+                if clip["segments"]
+                else [(0.0, clip["duration"])]
+            )
+            items.append({
+                "path": clip["path"],
+                "duration": clip["duration"],
+                "resolution": clip["resolution"],
+                "fps": clip["fps"],
+                "has_audio": clip["has_audio"],
+                "segments": segments,
+            })
+
+        if not items:
+            QMessageBox.warning(
+                self,
+                tr("错误"),
+                tr("没有可输出的视频。"),
+            )
+            return
+
+        encoder_index = self.encoder_combo.currentIndex()
         encoder_text = self.encoder_combo.currentText()
         nvenc_cq_values = (23, 28, 32)
-        if "NVENC H.264" in encoder_text:
+        if encoder_index == 0:
             codec = "h264_nvenc"
             preset = "p5"
-        elif "NVENC H.265" in encoder_text:
+        elif encoder_index == 1:
             codec = "hevc_nvenc"
             preset = "p5"
         else:
@@ -2329,7 +2734,7 @@ class MainWindow(QMainWindow):
                 tr("正在使用 CPU 软件编码（libx264）...")
             )
 
-        if "NVENC" in encoder_text:
+        if encoder_index in (0, 1):
             # 高/中/低对应 cq 23 / 28 / 32
             nvenc_cq = nvenc_cq_values[self.quality_combo.currentIndex()]
             ffmpeg_params = ["-rc", "vbr", "-cq", str(nvenc_cq)]
@@ -2347,19 +2752,26 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(False)
         self.btn_browse_input.setEnabled(False)
         self.btn_browse_output.setEnabled(False)
+        self.btn_remove_clip.setEnabled(False)
+        self.btn_move_clip_up.setEnabled(False)
+        self.btn_move_clip_down.setEnabled(False)
+        self.btn_clear_clips.setEnabled(False)
+        self.clip_list.setEnabled(False)
         self.encoder_combo.setEnabled(False)
         self.quality_combo.setEnabled(False)
+        self.cb_mute_export.setEnabled(False)
         self.progress_bar.setValue(0)
         self._process_started_at = time.perf_counter()
 
         self.thread = ProcessThread(
-            self.input_path, self.output_path,
-            self.segments.copy(), target_size,
+            items,
+            self.output_path,
+            target_size,
             codec=codec,
             preset=preset,
             ffmpeg_params=ffmpeg_params,
-            fps=self.video_fps,
-            has_audio=self.has_audio,
+            mute_audio=self.cb_mute_export.isChecked(),
+            keep_ratio=self.cb_keep_ratio.isChecked(),
         )
         self.thread.progress_updated.connect(self.update_progress)
         self.thread.status_updated.connect(self.update_status)
@@ -2379,13 +2791,19 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_browse_input.setEnabled(True)
         self.btn_browse_output.setEnabled(True)
+        self.btn_remove_clip.setEnabled(True)
+        self.btn_move_clip_up.setEnabled(True)
+        self.btn_move_clip_down.setEnabled(True)
+        self.btn_clear_clips.setEnabled(True)
+        self.clip_list.setEnabled(True)
         self.encoder_combo.setEnabled(True)
+        self.cb_mute_export.setEnabled(True)
         self._update_quality_enabled()
         elapsed = time.perf_counter() - getattr(
             self, "_process_started_at", time.perf_counter()
         )
         encoder_name = self.encoder_combo.currentText()
-        if "NVENC" in encoder_name:
+        if self.encoder_combo.currentIndex() in (0, 1):
             encoder_name += f" · {self.quality_combo.currentText()}"
         time_text = tr(
             "编码器：{encoder}\n用时：{elapsed:.2f} 秒"
