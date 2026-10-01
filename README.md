@@ -21,6 +21,8 @@ GitHub: [rookie-mo/VideoTrimmer](https://github.com/rookie-mo/VideoTrimmer)
 - 输出进度、编码器和耗时统计
 - 中文、English、日本語界面
 - 深色 / 浅色主题
+- 左侧预览和右侧工具栏可通过中间分隔条调整宽度
+- 右侧工具栏只保留纵向滚动条，避免横向滚动遮挡
 
 ## 下载
 

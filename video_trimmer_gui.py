@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QLineEdit, QFileDialog, QMessageBox,
     QProgressBar, QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox,
     QFormLayout, QStatusBar, QSlider, QComboBox, QListWidget,
-    QListWidgetItem, QAbstractItemView, QFrame, QScrollArea
+    QListWidgetItem, QAbstractItemView, QFrame, QScrollArea, QSplitter
 )
 from PyQt6.QtCore import (
     Qt,
@@ -151,6 +151,13 @@ QProgressBar::chunk {
 QStatusBar {
     background-color: #18191c;
     color: #b9bdc4;
+}
+QSplitter::handle {
+    background-color: #34383e;
+    width: 6px;
+}
+QSplitter::handle:hover {
+    background-color: #3794ff;
 }
 QToolTip {
     background-color: #2b2e33;
@@ -1144,6 +1151,7 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._connect_signals()
+        self._restore_splitter_sizes()
         self._application = QApplication.instance()
         if self._application is not None:
             self._application.installEventFilter(self)
@@ -1184,6 +1192,16 @@ class MainWindow(QMainWindow):
             DARK_STYLE if theme_index == 0 else LIGHT_STYLE
         )
         self._apply_window_frame_theme()
+
+    def _restore_splitter_sizes(self):
+        settings = QSettings(GITHUB_USER, APP_NAME)
+        saved = settings.value("layout/splitter_sizes", "760,400")
+        try:
+            left, right = [int(value) for value in str(saved).split(",", 1)]
+        except (TypeError, ValueError):
+            return
+        if left > 300 and right > 300:
+            self.main_splitter.setSizes([left, right])
 
     def _apply_window_frame_theme(self):
         if os.name != "nt":
@@ -1333,9 +1351,17 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(0)
+        self.main_splitter = QSplitter(
+            Qt.Orientation.Horizontal, central_widget
+        )
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(6)
 
         # 左侧预览
         left_panel = QWidget()
+        left_panel.setMinimumWidth(500)
         left_layout = QVBoxLayout(left_panel)
         self.preview_layout = QVBoxLayout()
         left_layout.addLayout(self.preview_layout, 1)
@@ -1407,7 +1433,7 @@ class MainWindow(QMainWindow):
         mark_layout.addWidget(self.btn_clear_markers)
         left_layout.addLayout(mark_layout)
 
-        main_layout.addWidget(left_panel, 2)
+        self.main_splitter.addWidget(left_panel)
 
         # 右侧控制面板
         right_panel = QWidget()
@@ -1456,18 +1482,21 @@ class MainWindow(QMainWindow):
         self.clip_list.setDefaultDropAction(Qt.DropAction.MoveAction)
         queue_layout.addWidget(self.clip_list)
 
-        queue_button_row = QHBoxLayout()
         self.btn_browse_input = QPushButton(tr("添加视频..."))
         self.btn_remove_clip = QPushButton(tr("移除选中"))
         self.btn_move_clip_up = QPushButton(tr("上移"))
         self.btn_move_clip_down = QPushButton(tr("下移"))
         self.btn_clear_clips = QPushButton(tr("清空队列"))
-        queue_button_row.addWidget(self.btn_browse_input)
-        queue_button_row.addWidget(self.btn_remove_clip)
-        queue_button_row.addWidget(self.btn_move_clip_up)
-        queue_button_row.addWidget(self.btn_move_clip_down)
-        queue_button_row.addWidget(self.btn_clear_clips)
-        queue_layout.addLayout(queue_button_row)
+        queue_button_row1 = QHBoxLayout()
+        queue_button_row1.addWidget(self.btn_browse_input)
+        queue_button_row1.addWidget(self.btn_remove_clip)
+        queue_button_row1.addWidget(self.btn_clear_clips)
+        queue_layout.addLayout(queue_button_row1)
+        queue_button_row2 = QHBoxLayout()
+        queue_button_row2.addWidget(self.btn_move_clip_up)
+        queue_button_row2.addWidget(self.btn_move_clip_down)
+        queue_button_row2.addStretch()
+        queue_layout.addLayout(queue_button_row2)
         self.queue_hint = QLabel(
             tr("队列顺序即输出顺序；没有片段的视频会输出完整内容。")
         )
@@ -1628,10 +1657,23 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.output_path_label)
 
         right_scroll = QScrollArea()
+        self.right_scroll = right_scroll
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        right_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        right_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        right_scroll.setMinimumWidth(340)
+        right_panel.setMinimumWidth(340)
         right_scroll.setWidget(right_panel)
-        main_layout.addWidget(right_scroll, 1)
+        self.main_splitter.addWidget(right_scroll)
+        self.main_splitter.setStretchFactor(0, 1)
+        self.main_splitter.setStretchFactor(1, 0)
+        self.main_splitter.setSizes([760, 400])
+        main_layout.addWidget(self.main_splitter)
 
     def _connect_signals(self):
         self.theme_combo.currentIndexChanged.connect(self.apply_theme)
@@ -2855,6 +2897,13 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event):
+        try:
+            left, right = self.main_splitter.sizes()[:2]
+            QSettings(GITHUB_USER, APP_NAME).setValue(
+                "layout/splitter_sizes", f"{left},{right}"
+            )
+        except Exception:
+            pass
         if getattr(self, "_application", None) is not None:
             self._application.removeEventFilter(self)
         if hasattr(self, "vlc_player"):
